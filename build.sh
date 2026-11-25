@@ -16,7 +16,10 @@ swiftc -O "$SRC_DIR/main.swift" -o "$TMP/threefingerfn"
 codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$TMP/threefingerfn"
 
 mkdir -p "$(dirname "$DEST")"
-cp "$TMP/threefingerfn" "$DEST"
+# Copying over the old file keeps its inode, and macOS then kills the new code with
+# OS_REASON_CODESIGNING (stale signature cache). Install a new file and rename it into place.
+cp "$TMP/threefingerfn" "$DEST.new"
+mv -f "$DEST.new" "$DEST"
 
 codesign -d -r- "$DEST" 2>&1 | grep designated
 echo "Installed $DEST"

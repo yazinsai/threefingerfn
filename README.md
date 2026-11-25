@@ -3,7 +3,7 @@
 Hold the Fn key with three fingers on the trackpad. Built for push-to-talk dictation on macOS.
 
 - Rest three fingers on the trackpad for 0.5 seconds. The tool holds **Fn**. No click is needed.
-- Lift your fingers. The tool releases Fn, then presses **Return** 0.75 seconds later. This gives your dictation app time to finish the transcript.
+- Lift all your fingers. The tool releases Fn, then presses **Return** 0.75 seconds later. This gives your dictation app time to finish the transcript.
 - Press **Escape** while you hold, or before Return fires. The tool releases Fn and sends no Return. The dictation app still receives the Escape.
 - Shorter three-finger touches, swipes, and normal clicks work as usual.
 
@@ -45,13 +45,14 @@ The tool waits and starts by itself when you grant the permission. If the grant 
 ## Usage
 
 ```bash
-~/bin/threefingerfn [holdDelay] [enterDelay]
+~/bin/threefingerfn [holdDelay] [enterDelay] [fingers]
 ```
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `holdDelay` | `0.5` | Seconds the three fingers rest before Fn goes down. |
 | `enterDelay` | `0.5` | Seconds after release before Return. A negative value turns Return off. |
+| `fingers` | `3` | Number of resting fingers that holds Fn. Use `4` to make accidental triggers less likely. |
 
 Example: `threefingerfn 0.7 -1` waits 0.7 seconds and never presses Return.
 
@@ -83,7 +84,9 @@ Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rock.t
 
 - The tool reads finger count with the private `MultitouchSupport` framework. Apple can change or remove it in a macOS update.
 - Three fingers that rest for the hold delay trigger Fn. A slow three-finger swipe can trigger it too. Raise `holdDelay` if this happens.
-- If the finger count briefly drops from three to two, Fn releases early.
+- After Fn goes down, the finger count can change. Only a full lift releases Fn.
+- The tool reattaches all trackpads when macOS adds a trackpad device (for example, a Magic Trackpad reconnects) and after wake. A reconnected trackpad keeps its device ID but its old device object stops sending touches.
+- With `fingers` set to `4`, a slow four-finger swipe (Spaces, Mission Control) can trigger Fn. Raise `holdDelay` if this happens.
 - While Fn is held, a hard press does not click through.
 
 ## License

@@ -10,6 +10,7 @@ import Foundation
 let args = CommandLine.arguments.dropFirst().compactMap(Double.init)
 let holdDelay: TimeInterval = args.count > 0 ? args[0] : 0.5
 let enterDelay: TimeInterval = args.count > 1 ? args[1] : 0.5
+let fingerCount: Int32 = args.count > 2 ? Int32(args[2]) : 3
 let marker: Int64 = 0x46_4E_48_4C // tags events we post so the tap ignores them
 let escapeKey: Int64 = 53
 
@@ -22,25 +23,42 @@ typealias Start = @convention(c) (UnsafeMutableRawPointer, Int32) -> Void
 let mtCreateList = unsafeBitCast(dlsym(mt, "MTDeviceCreateList"), to: CreateList.self)
 let mtRegister = unsafeBitCast(dlsym(mt, "MTRegisterContactFrameCallback"), to: Register.self)
 let mtStart = unsafeBitCast(dlsym(mt, "MTDeviceStart"), to: Start.self)
-typealias GetID = @convention(c) (UnsafeMutableRawPointer, UnsafeMutablePointer<UInt64>) -> Int32
-let mtGetID = unsafeBitCast(dlsym(mt, "MTDeviceGetDeviceID"), to: GetID.self)
+typealias Stop = @convention(c) (UnsafeMutableRawPointer) -> Int32
+let mtStop = unsafeBitCast(dlsym(mt, "MTDeviceStop"), to: Stop.self)
+let mtUnregister = unsafeBitCast(dlsym(mt, "MTUnregisterContactFrameCallback"), to: Register.self)
 
 // Runs on a MultitouchSupport thread; hop to the main thread before touching state.
 let contactCallback: MTContactCallback = { _, _, count, _, _ in
     DispatchQueue.main.async { handleFingers(count) }
     return 0
 }
-var attachedIDs = Set<UInt64>()  // MTDeviceCreateList returns fresh objects each call, so dedupe by device ID
+// A reconnected trackpad (Bluetooth off/on, wake) keeps its device ID, but the old device object
+// stops delivering frames. So drop every old object and attach fresh ones each time.
+var devices: [UnsafeMutableRawPointer] = []  // each one retained by us
 func attachTrackpads() {
-    let list = mtCreateList().takeRetainedValue() as [AnyObject]
-    for d in list {
-        let p = Unmanaged.passUnretained(d).toOpaque()
-        var id: UInt64 = 0
-        _ = mtGetID(p, &id)
-        if !attachedIDs.insert(id).inserted { continue }
-        _ = Unmanaged.passRetained(d) // keep alive
+    for p in devices {
+        mtUnregister(p, contactCallback)
+        _ = mtStop(p)
+        Unmanaged<AnyObject>.fromOpaque(p).release()
+    }
+    devices = (mtCreateList().takeRetainedValue() as [AnyObject]).map { d in
+        let p = Unmanaged.passRetained(d).toOpaque()
         mtRegister(p, contactCallback)
         mtStart(p, 0)
+        return p
+    }
+    print("Attached \(devices.count) trackpad(s)"); fflush(stdout)
+}
+var reattachPending = false
+func scheduleReattach(_ reason: String) {
+    guard !reattachPending else { return }
+    reattachPending = true
+    // Wait so a device that just appeared is ready and a burst of notifications becomes one reattach.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+        reattachPending = false
+        print("Reattaching trackpads (\(reason))"); fflush(stdout)
+        attachTrackpads()
+        handleFingers(0) // frames from the old objects may have stopped mid-touch; reset to idle
     }
 }
 
@@ -89,22 +107,24 @@ func cancelRecording() {
     Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { _ in sendFn(false) }
 }
 
-// Touch-driven: three fingers resting for holdDelay hold Fn; lifting any finger releases it.
+// Touch-driven: the set number of fingers resting for holdDelay holds Fn; only lifting every finger releases it.
 func handleFingers(_ count: Int32) {
     guard count != lastCount else { return }
     lastCount = count
-    if count == 3 {
+    if count == fingerCount {
         guard case .idle = state else { return }
         enterTimer?.invalidate(); enterTimer = nil // a new touch before Return fires cancels it
         state = .pending
         timer = Timer.scheduledTimer(withTimeInterval: holdDelay, repeats: false) { _ in
-            if case .pending = state, lastCount == 3 { state = .fnHeld; sendFn(true) }
+            if case .pending = state, lastCount == fingerCount { state = .fnHeld; sendFn(true) }
         }
     } else {
-        timer?.invalidate(); timer = nil
+        // Before Fn goes down, any change cancels (swipes stay untouched). After that, only a full
+        // lift ends the hold, so shifting fingers mid-dictation does not stop it.
         switch state {
-        case .fnHeld: releaseFn()
-        case .pending, .cancelled: state = .idle
+        case .pending: timer?.invalidate(); timer = nil; state = .idle
+        case .fnHeld: if count == 0 { releaseFn() }
+        case .cancelled: if count == 0 { state = .idle }
         case .idle: break
         }
     }
@@ -160,8 +180,17 @@ guard let t = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
 tap = t
 CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(nil, t, 0), .commonModes)
 CGEvent.tapEnable(tap: t, enable: true)
-// pick up trackpads connected later (e.g. Magic Trackpad over Bluetooth)
-Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in attachTrackpads() }
+// Reattach when a trackpad appears (Magic Trackpad connects or reconnects) and after wake.
+let notifyPort = IONotificationPortCreate(kIOMainPortDefault)
+CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(notifyPort).takeUnretainedValue(), .defaultMode)
+var addedIter: io_iterator_t = 0
+func drain(_ iter: io_iterator_t) { while case let s = IOIteratorNext(iter), s != 0 { IOObjectRelease(s) } }
+IOServiceAddMatchingNotification(notifyPort, kIOFirstMatchNotification, IOServiceMatching("AppleMultitouchDevice"),
+                                 { _, iter in drain(iter); scheduleReattach("trackpad added") }, nil, &addedIter)
+drain(addedIter) // existing devices are attached already; draining arms the notification
+NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+    scheduleReattach("wake")
+}
 signal(SIGINT) { _ in if case .fnHeld = state { sendFn(false) }; exit(0) }
-print("threefingerfn running: rest three fingers for \(holdDelay)s to hold Fn; Return \(enterDelay)s after release; Escape cancels.")
+print("threefingerfn running: rest \(fingerCount) fingers for \(holdDelay)s to hold Fn; Return \(enterDelay)s after release; Escape cancels."); fflush(stdout)
 CFRunLoopRun()
