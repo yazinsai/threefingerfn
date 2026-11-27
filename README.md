@@ -6,6 +6,21 @@ Hold the Fn key with three fingers on the trackpad. Built for push-to-talk dicta
 - Lift all your fingers. The tool releases Fn, then presses **Return** 0.75 seconds later. This gives your dictation app time to finish the transcript.
 - Press **Escape** while you hold, or before Return fires. The tool releases Fn and sends no Return. The dictation app still receives the Escape.
 - Shorter three-finger touches, swipes, and normal clicks work as usual.
+- The finger count is a setting. Use `5` to stop accidental triggers.
+
+## Quick start
+
+1. Install the Xcode command line tools: `xcode-select --install`.
+2. Create a code-signing certificate named `threefingerfn-dev` (see [Build and install](#build-and-install)).
+3. Clone and build:
+   ```bash
+   git clone https://github.com/yazinsai/threefingerfn.git
+   cd threefingerfn
+   ./build.sh
+   ```
+4. Install the launch agent with the command in [Run at login](#run-at-login).
+5. Give `~/bin/threefingerfn` Accessibility permission (see [Permission](#permission)).
+6. Rest your fingers on the trackpad and talk.
 
 ## Requirements
 
@@ -50,7 +65,7 @@ The tool waits and starts by itself when you grant the permission. If the grant 
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
-| `holdDelay` | `0.5` | Seconds the three fingers rest before Fn goes down. |
+| `holdDelay` | `0.5` | Seconds the fingers rest before Fn goes down. |
 | `enterDelay` | `0.5` | Seconds after release before Return. A negative value turns Return off. |
 | `fingers` | `3` | Number of resting fingers that holds Fn. Use `4` to make accidental triggers less likely. |
 
@@ -58,27 +73,36 @@ Example: `threefingerfn 0.7 -1` waits 0.7 seconds and never presses Return.
 
 ## Run at login
 
-Save this as `~/Library/LaunchAgents/com.rock.threefingerfn.plist`. Replace `YOU` with your user name.
+Run this command to make the launch agent and start it. Change the three numbers to your settings (`holdDelay`, `enterDelay`, `fingers`).
 
-```xml
+```bash
+cat > ~/Library/LaunchAgents/com.rock.threefingerfn.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.rock.threefingerfn</string>
   <key>ProgramArguments</key><array>
-    <string>/Users/YOU/bin/threefingerfn</string>
+    <string>$HOME/bin/threefingerfn</string>
     <string>0.5</string>
-    <string>0.75</string>
+    <string>1</string>
+    <string>5</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/threefingerfn.log</string>
-  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/threefingerfn.log</string>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/threefingerfn.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/threefingerfn.log</string>
 </dict></plist>
+EOF
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rock.threefingerfn.plist
 ```
 
-Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rock.threefingerfn.plist`. After that, `./build.sh` restarts the agent for you.
+After that, `./build.sh` restarts the agent for you. If you edit the plist, reload it:
+
+```bash
+launchctl bootout gui/$(id -u)/com.rock.threefingerfn
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rock.threefingerfn.plist
+```
 
 ## Notes and limits
 
